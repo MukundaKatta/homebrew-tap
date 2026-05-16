@@ -1,0 +1,102 @@
+name: bump-on-release
+
+# Daily check (or manual dispatch) that scans every formula in this tap
+# and opens a bump PR when the upstream PyPI sdist version is newer than
+# what the formula currently references.
+#
+# Limited to formulas hosted at files.pythonhosted.org (i.e. published to
+# PyPI). Adapt the check for non-PyPI sources later if needed.
+
+on:
+  schedule:
+    - cron: "37 6 * * *"   # daily at 06:37 UTC
+  workflow_dispatch:
+    inputs:
+      formula:
+        description: "Specific formula to bump (e.g., bedrockcache). Empty = all."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: detect outdated PyPI formulas
+        id: detect
+        run: |
+          set -euo pipefail
+          declare -a outdated=()
+          for f in Formula/*.rb; do
+            name=$(basename "$f" .rb)
+            if [ -n "${{ inputs.formula }}" ] && [ "$name" != "${{ inputs.formula }}" ]; then
+              continue
+            fi
+            url=$(grep -E '^\s*url\s+"' "$f" | head -1 | sed -E 's/.*"(https:[^"]+)".*/\1/')
+            case "$url" in
+              https://files.pythonhosted.org/*) ;;
+              *) echo "skip $name (non-PyPI url: $url)"; continue ;;
+            esac
+            local_ver=$(echo "$url" | sed -E 's#.*-([0-9]+\.[0-9]+\.[0-9]+([abrc.0-9-]*)?)\.tar\.gz#\1#')
+            pypi_ver=$(curl -fsSL "https://pypi.org/pypi/$name/json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["info"]["version"])')
+            echo "$name: local=$local_ver  pypi=$pypi_ver"
+            if [ "$local_ver" != "$pypi_ver" ]; then
+              outdated+=("$name:$pypi_ver")
+            fi
+          done
+          echo "outdated=${outdated[*]:-}" >> "$GITHUB_OUTPUT"
+
+      - name: open bump PRs
+        if: steps.detect.outputs.outdated != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for pair in ${{ steps.detect.outputs.outdated }}; do
+            name="${pair%%:*}"
+            new_ver="${pair##*:}"
+            branch="auto-bump/$name-$new_ver"
+
+            # Skip if an open PR for this bump already exists.
+            existing=$(gh pr list --state open --search "head:$branch" --json number --jq 'length')
+            if [ "$existing" != "0" ]; then
+              echo "PR for $name $new_ver already open, skipping"
+              continue
+            fi
+
+            git checkout -B "$branch" origin/main
+
+            # Compute new url + sha256 from PyPI.
+            new_url="https://files.pythonhosted.org/packages/source/${name:0:1}/$name/$name-$new_ver.tar.gz"
+            new_sha=$(curl -fsSL "$new_url" | shasum -a 256 | awk '{print $1}')
+
+            python3 - "Formula/$name.rb" "$new_url" "$new_sha" <<'PY'
+import re, sys
+path, new_url, new_sha = sys.argv[1:]
+src = open(path).read()
+src = re.sub(r'^\s*url\s+"[^"]+"', f'  url "{new_url}"', src, count=1, flags=re.MULTILINE)
+src = re.sub(r'^\s*sha256\s+"[^"]+"', f'  sha256 "{new_sha}"', src, count=1, flags=re.MULTILINE)
+open(path, "w").write(src)
+PY
+
+            git add "Formula/$name.rb"
+            git commit -m "$name: bump to $new_ver
+
+Auto-detected by the bump-on-release workflow. PyPI sdist sha256
+verified above."
+            git push -f -u origin "$branch"
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "$name: bump to $new_ver" \
+              --body "Automated bump. PyPI: https://pypi.org/project/$name/$new_ver/"
+          done
