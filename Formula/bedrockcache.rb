@@ -3,8 +3,8 @@ class Bedrockcache < Formula
 
   desc "Audit Anthropic prompt caching on AWS Bedrock through any abstraction stack"
   homepage "https://github.com/MukundaKatta/bedrockcache"
-  url "https://github.com/MukundaKatta/bedrockcache/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "9cc200ac86c7d31f0b6243aa3039afec0749bc2dc399dbcb560ab1249dd62b15"
+  url "https://files.pythonhosted.org/packages/source/b/bedrockcache/bedrockcache-0.1.0.tar.gz"
+  sha256 "f5f7cbcecc7548e007bc93b834497c9952e543b5b28e8977a654c7faf7feefbe"
   license "MIT"
   head "https://github.com/MukundaKatta/bedrockcache.git", branch: "main"
 
